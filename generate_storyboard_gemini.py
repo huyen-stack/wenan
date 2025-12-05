@@ -2,18 +2,14 @@ import os
 import json
 from typing import Dict, Any
 
-from fastapi import FastAPI
-from pydantic import BaseModel
+import streamlit as st
 from google import genai
 
-# 从环境变量读取 API Key
 API_KEY = os.getenv("GEMINI_API_KEY")
 if not API_KEY:
-    raise RuntimeError("环境变量 GEMINI_API_KEY 未设置")
+    raise RuntimeError("请先设置环境变量 GEMINI_API_KEY")
 
 client = genai.Client(api_key=API_KEY)
-
-app = FastAPI(title="Gemini Storyboard API")
 
 
 def build_prompt(brand: str, product: str, duration_sec: int, style: str) -> str:
@@ -60,33 +56,85 @@ def build_prompt(brand: str, product: str, duration_sec: int, style: str) -> str
 """
 
 
-def generate_storyboard(brand: str, product: str, duration_sec: int, style: str) -> Dict[str, Any]:
+def generate_storyboard(
+    brand: str,
+    product: str,
+    duration_sec: int,
+    style: str,
+) -> Dict[str, Any]:
     prompt = build_prompt(brand, product, duration_sec, style)
     response = client.models.generate_content(
         model="gemini-2.0-flash",
         contents=prompt,
-        config={
-            "response_mime_type": "application/json",
-        },
+        config={"response_mime_type": "application/json"},
     )
     text = response.text
     data = json.loads(text)
     return data
 
 
-class StoryboardRequest(BaseModel):
-    brand: str
-    product: str
-    duration_sec: int = 15
-    style: str = "生活感、烟火气、真实、有点幽默"
+def extract_voiceover(data: Dict[str, Any]) -> str:
+    scenes = data.get("scenes", [])
+    lines = []
+    for scene in scenes:
+        sid = scene.get("id", "")
+        t = scene.get("time_range", "")
+        vo = scene.get("voiceover", "")
+        if vo:
+            lines.append(f"[{sid} | {t}] {vo}")
+    return "\n".join(lines)
 
 
-@app.post("/generate_storyboard")
-def generate_storyboard_endpoint(req: StoryboardRequest):
-    data = generate_storyboard(
-        brand=req.brand,
-        product=req.product,
-        duration_sec=req.duration_sec,
-        style=req.style,
+# ================= Streamlit UI =================
+
+st.set_page_config(page_title="Gemini 分镜生成小工具", layout="wide")
+st.title("🎬 Gemini 分镜 + 文案生成助手")
+
+col1, col2 = st.columns(2)
+
+with col1:
+    brand = st.text_input("品牌（必填）", value="邵警秘卤")
+    product = st.text_input("产品（必填）", value="卤鸭脖+卤鸭翅 夜宵套餐")
+    duration_sec = st.number_input("视频时长（秒）", min_value=5, max_value=120, value=15, step=1)
+
+with col2:
+    style = st.text_area(
+        "整体风格（中文描述）",
+        value="烟火气、夜宵档、适合抖音的真实街边风格，有点幽默",
+        height=100,
     )
-    return data
+
+if st.button("✨ 生成分镜 & 文案", type="primary"):
+    if not brand or not product:
+        st.error("请先填写品牌和产品名称")
+    else:
+        with st.spinner("正在调用 Gemini 生成分镜，请稍等..."):
+            try:
+                data = generate_storyboard(brand, product, duration_sec, style)
+            except Exception as e:
+                st.error(f"调用 Gemini 出错：{e}")
+            else:
+                st.success("生成完成！")
+
+                # 左侧展示 JSON 分镜
+                st.subheader("📜 分镜 JSON")
+                st.json(data)
+
+                # 右侧展示旁白脚本
+                voice_script = extract_voiceover(data)
+                st.subheader("🎙 旁白脚本")
+                st.text_area("可复制给配音用", value=voice_script, height=200)
+
+                # 下载按钮
+                st.download_button(
+                    "下载 storyboard.json",
+                    data=json.dumps(data, ensure_ascii=False, indent=2),
+                    file_name="storyboard.json",
+                    mime="application/json",
+                )
+                st.download_button(
+                    "下载 voiceover_script.txt",
+                    data=voice_script,
+                    file_name="voiceover_script.txt",
+                    mime="text/plain",
+                )
